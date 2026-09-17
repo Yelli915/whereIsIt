@@ -1,0 +1,152 @@
+-- ==============================================================================
+-- 이 파일은 두 섹션으로 구성됩니다. 스키마 변경 시 반드시 두 섹션 모두 함께 수정할 것.
+--   1) 아래 Raw SQL DDL — 실제 마이그레이션 실행용, 소스 오브 트루스(source of truth).
+--   2) 하단 `Table ... {}` DBML 코드 — dbdiagram.io ERD 시각화 전용, 이 SQL의 파생물.
+--      DBML은 Partial Unique Index를 표현하지 못해 일부 제약이 생략되어 있으므로
+--      DBML만 보고 마이그레이션하지 말 것 (상세 사유는 하단 DBML 섹션 주석 참고).
+-- ==============================================================================
+
+-- 1. UUID 확장 활성화 (필요 시)
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+ 
+-- 2. users 테이블 생성
+CREATE TABLE users (
+    user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL,
+    phone_number VARCHAR(50) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    vehicle_plate_number VARCHAR(20) NULL,
+    vehicle_model VARCHAR(50) NULL,
+    role_type VARCHAR(20) NOT NULL DEFAULT 'USER',
+    created_at TIMESTAMP NOT NULL DEFAULT now()
+);
+ 
+-- 3. events 테이블 생성
+CREATE TABLE events (
+    event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(200) NOT NULL,
+    venue_name VARCHAR(100) NOT NULL,
+    address VARCHAR(255) NOT NULL,
+    start_datetime TIMESTAMP NOT NULL,
+    end_datetime TIMESTAMP NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'UPCOMING',
+    created_by UUID NOT NULL REFERENCES users(user_id),
+    updated_at TIMESTAMP NULL
+);
+ 
+-- 4. event_parking_spaces 테이블 생성
+CREATE TABLE event_parking_spaces (
+    space_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID NOT NULL REFERENCES events(event_id),
+    host_id UUID NOT NULL REFERENCES users(user_id),
+    address VARCHAR(255) NOT NULL,
+    photo_url VARCHAR(500) NOT NULL,
+    walking_minutes INTEGER NOT NULL,
+    entry_notes TEXT NULL,
+    price INTEGER NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    created_at TIMESTAMP NOT NULL DEFAULT now()
+);
+ 
+-- 5. reservations 테이블 생성
+CREATE TABLE reservations (
+    reservation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    space_id UUID NOT NULL REFERENCES event_parking_spaces(space_id),
+    guest_id UUID NOT NULL REFERENCES users(user_id),
+    vehicle_plate_number VARCHAR(20) NOT NULL,
+    payment_amount INTEGER NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'CONFIRMED',
+    is_checked_in BOOLEAN NOT NULL DEFAULT false,
+    is_checked_out BOOLEAN NOT NULL DEFAULT false,
+    is_refunded BOOLEAN NOT NULL DEFAULT false,
+    is_payout_done BOOLEAN NOT NULL DEFAULT false,
+    issue_note TEXT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT now()
+);
+ 
+-- 6. 핵심 비즈니스 무결성: Partial Unique Index (취소 건 제외 1공간 1활성예약 제약)
+-- CANCELLED로 종결된 건은 인덱스에서 제외되므로 즉시 다른 게스트가 재예약 가능
+CREATE UNIQUE INDEX uq_active_space_reservation 
+ON reservations (space_id) 
+WHERE status != 'CANCELLED';
+ 
+-- 7. 성능 최적화 보조 인덱스
+CREATE INDEX idx_spaces_event_status ON event_parking_spaces (event_id, status);
+CREATE INDEX idx_reservations_guest ON reservations (guest_id);
+ 
+ 
+ 
+ 
+// ==============================================================================
+// 내자리 어딨냐 (Phase 0 Pilot DBML v1.0)
+// ⚠️ 주의: DBML 문법은 Partial Index(WHERE 조건)를 지원하지 않으므로,
+// reservations.space_id의 [unique]를 의도적으로 제거했습니다.
+// dbdiagram.io 등에서 SQL export 시 전체 Unique 제약이 생성되는 것을 방지하기 위함입니다.
+// 실제 DB 마이그레이션 시 반드시 아래 Raw SQL을 직접 실행해야 합니다:
+// CREATE UNIQUE INDEX uq_active_space_reservation ON reservations (space_id) WHERE status != 'CANCELLED';
+// ==============================================================================
+ 
+Table users {
+  user_id uuid [pk, default: `gen_random_uuid()`, note: '사용자 식별자 (UUID v4)']
+  name varchar [not null, note: '실명/닉네임']
+  phone_number varchar [not null, note: '연락처 (평문 저장)']
+  password_hash varchar [not null, note: '비밀번호 해시']
+  vehicle_plate_number varchar [null, note: '등록 차량번호']
+  vehicle_model varchar [null, note: '차종']
+  role_type varchar [not null, default: 'USER', note: 'USER, ADMIN']
+  created_at timestamp [not null, default: `now()`]
+ 
+  Note: '사용자 테이블'
+}
+ 
+Table events {
+  event_id uuid [pk, default: `gen_random_uuid()`, note: '행사 식별자']
+  name varchar [not null, note: '행사명']
+  venue_name varchar [not null, note: '행사장 명칭']
+  address varchar [not null, note: '행사장 주소']
+  start_datetime timestamp [not null, note: '시작 일시']
+  end_datetime timestamp [not null, note: '종료 일시']
+  status varchar [not null, default: 'UPCOMING', note: 'UPCOMING, ONGOING, CLOSED']
+  created_by uuid [not null, ref: > users.user_id, note: '등록 관리자']
+  updated_at timestamp [null, note: '수정 일시']
+ 
+  Note: '행사 테이블'
+}
+ 
+Table event_parking_spaces {
+  space_id uuid [pk, default: `gen_random_uuid()`, note: '공간 식별자']
+  event_id uuid [not null, ref: > events.event_id, note: '종속 행사']
+  host_id uuid [not null, ref: > users.user_id, note: '호스트']
+  address varchar [not null, note: '공간 상세 주소']
+  photo_url varchar [not null, note: '현장 사진 URL']
+  walking_minutes integer [not null, note: '도보 소요 시간(분)']
+  entry_notes text [null, note: '진입 유의사항']
+  price integer [not null, note: '패키지 대여 요금(원)']
+  status varchar [not null, default: 'PENDING', note: 'PENDING, APPROVED, REJECTED']
+  created_at timestamp [not null, default: `now()`]
+ 
+  Note: '주차공간 테이블'
+}
+ 
+Table reservations {
+  reservation_id uuid [pk, default: `gen_random_uuid()`, note: '예약 식별자']
+  space_id uuid [not null, ref: > event_parking_spaces.space_id, note: '주차공간 ID']
+  guest_id uuid [not null, ref: > users.user_id, note: '게스트 ID']
+  vehicle_plate_number varchar [not null, note: '예약 차량번호']
+  payment_amount integer [not null, note: '결제 금액']
+  status varchar [not null, default: 'CONFIRMED', note: 'CONFIRMED, ISSUE_REPORTED, CANCELLED, COMPLETED']
+  is_checked_in boolean [not null, default: false, note: '입차 여부']
+  is_checked_out boolean [not null, default: false, note: '출차 여부']
+  is_refunded boolean [not null, default: false, note: '전액 환불 여부']
+  is_payout_done boolean [not null, default: false, note: '정산 완료 여부']
+  issue_note text [null, note: '메모 누적']
+  created_at timestamp [not null, default: `now()`]
+ 
+  indexes {
+    // DBML export 시 잘못된 전체 UNIQUE 생성을 막기 위해 일반 인덱스로 표현
+    // 실제 유니크 인덱스는 상단 주석의 Raw SQL로 생성 필수
+    (space_id) [name: 'idx_reservations_space_id', note: '실제 DB에서는 WHERE status != CANCELLED 유니크 인덱스로 생성 필수']
+  }
+ 
+  Note: '예약 및 결제/정산 테이블'
+}

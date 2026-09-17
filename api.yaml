@@ -1,0 +1,751 @@
+openapi: 3.0.3
+info:
+  title: 내자리 어딨냐 (Phase 0 Pilot API)
+  description: 단기 행사 주차공간 공유 플랫폼 백엔드 API 명세서 (v1.0.1 최종 수정본)
+  version: 1.0.1
+servers:
+  - url: https://api.myseat.pilot.com/api
+    description: Phase 0 파일럿 서버
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ==========================================
+  # 1. 인증 및 사용자 (Auth & User)
+  # ==========================================
+  /auth/signup:
+    post:
+      summary: 간이 회원가입
+      description: role_type은 항상 'USER'로 생성됨. ADMIN 계정 생성 API는 없음 — Phase 0에서는 DB 직접 시딩(seed script)으로만 생성
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, phone_number, password]
+              properties:
+                name: { type: string, example: "홍길동" }
+                phone_number: { type: string, example: "01012345678" }
+                password: { type: string, example: "pass1234!" }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        400:
+          $ref: '#/components/responses/400BadRequest'
+
+  /auth/login:
+    post:
+      summary: 로그인 (JWT 토큰 발급)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone_number, password]
+              properties:
+                phone_number: { type: string, example: "01012345678" }
+                password: { type: string, example: "pass1234!" }
+      responses:
+        200:
+          description: 로그인 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      access_token: { type: string, example: "eyJhbGciOi..." }
+        400:
+          $ref: '#/components/responses/400BadRequest'
+
+  /users/me:
+    get:
+      summary: 내 프로필 정보 조회
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        401:
+          $ref: '#/components/responses/401Unauthorized'
+    patch:
+      summary: 내 차량 정보 등록 및 수정
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vehicle_plate_number: { type: string, example: "12가 3456" }
+                vehicle_model: { type: string, example: "아반떼" }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        401:
+          $ref: '#/components/responses/401Unauthorized'
+
+  # ==========================================
+  # 2. 행사 (Event)
+  # ==========================================
+  /events:
+    get:
+      summary: 진행 중/예정된 행사 목록 조회
+      security: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            default: "UPCOMING,ONGOING"
+          description: "조회할 행사 상태 (기본값: UPCOMING,ONGOING. CLOSED는 제외)"
+      responses:
+        200:
+          description: 행사 목록 반환
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+
+  /events/{event_id}:
+    get:
+      summary: 특정 행사 상세 조회
+      security: []
+      parameters:
+        - in: path
+          name: event_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        200:
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    $ref: '#/components/schemas/Event'
+        400:
+          $ref: '#/components/responses/400BadRequest'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  /admin/events:
+    post:
+      summary: 신규 행사 등록 (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, venue_name, address, start_datetime, end_datetime]
+              properties:
+                name: { type: string, example: "2026 잠실 록 페스티벌" }
+                venue_name: { type: string, example: "잠실종합운동장" }
+                address: { type: string, example: "서울특별시 송파구 올림픽로 25" }
+                start_datetime: { type: string, format: date-time }
+                end_datetime: { type: string, format: date-time }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        401:
+          $ref: '#/components/responses/401Unauthorized'
+        403:
+          $ref: '#/components/responses/403Forbidden'
+
+  /admin/events/{event_id}:
+    patch:
+      summary: 행사 메타정보 수정 (Admin - status 수정 불가)
+      parameters:
+        - in: path
+          name: event_id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                venue_name: { type: string }
+                address: { type: string }
+                end_datetime: { type: string, format: date-time }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  /admin/events/{event_id}/block-reservations:
+    post:
+      summary: 신규 예약 마감 처리 (Admin - UPCOMING -> ONGOING)
+      description: 신규 예약 및 신규 공간 등록만 차단하며 기존 예약의 입출차 진행은 정상 유지
+      parameters:
+        - in: path
+          name: event_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  /admin/events/{event_id}/close:
+    post:
+      summary: 행사 공식 종료 및 잔여 CONFIRMED 예약 COMPLETED 일괄 종결 (Admin - status: CLOSED)
+      parameters:
+        - in: path
+          name: event_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        200:
+          description: 행사 종료 처리 결과 반환
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      event_id: { type: string, format: uuid }
+                      status: { type: string, example: "CLOSED" }
+                      auto_completed_reservations_count: { type: integer, example: 4 }
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  /admin/events/{event_id}/reservations:
+    get:
+      summary: 특정 행사의 전체 예약 및 현장 모니터링 목록 (Admin)
+      parameters:
+        - in: path
+          name: event_id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: status
+          required: false
+          schema:
+            type: string
+            enum: [CONFIRMED, ISSUE_REPORTED, CANCELLED, COMPLETED]
+          description: "상태 필터 (미지정 시 전체 반환). CANCEL_REQUESTED는 Phase 0 제외로 값에 없음"
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  # ==========================================
+  # 3. 주차공간 (EventParkingSpace)
+  # ==========================================
+  /events/{event_id}/spaces:
+    get:
+      summary: 행사 주변 예약 가능 공간 목록 (Guest)
+      description: 대상 행사의 status != 'UPCOMING'일 경우 즉시 400 에러 반환
+      security: []
+      parameters:
+        - in: path
+          name: event_id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: sort
+          schema: { type: string, default: "distance" }
+      responses:
+        200:
+          description: 도보 소요 시간 오름차순 목록
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SpaceDetail'
+        400:
+          description: 예약 마감 또는 종료된 행사
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommonError'
+                example:
+                  success: false
+                  message: "예약이 마감되었거나 종료된 행사입니다."
+        404:
+          $ref: '#/components/responses/404NotFound'
+    post:
+      summary: 행사에 주차공간 등록 (Host)
+      description: 대상 행사의 status == 'UPCOMING'일 때만 등록 가능 (아닐 시 400)
+      parameters:
+        - in: path
+          name: event_id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address, photo_url, walking_minutes, price]
+              properties:
+                address: { type: string, example: "서울시 송파구 잠실동 123-45" }
+                photo_url: { type: string, example: "https://storage.myseat.com/img1.jpg" }
+                walking_minutes: { type: integer, example: 6 }
+                entry_notes: { type: string, example: "골목 끝 주택 마당, SUV 진입 가능" }
+                price: { type: integer, example: 15000 }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        400:
+          $ref: '#/components/responses/400BadRequest'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  /spaces/mine:
+    get:
+      summary: 내가 등록한 주차공간 목록 및 현황 조회 (Host)
+      description: 각 공간별 현재 활성 예약 정보(차량번호, 입출차 O/X)를 임베딩하여 반환
+      responses:
+        200:
+          description: 내 주차공간 목록 반환
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HostSpaceItem'
+
+  /spaces/{space_id}:
+    delete:
+      summary: 등록한 공간 삭제 (Host)
+      description: 해당 공간에 종속된 예약 레코드가 1건이라도 존재하면 상태 불문 400 에러 차단 (FK 무결성 보호)
+      parameters:
+        - in: path
+          name: space_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        400:
+          description: 예약 이력이 존재하여 삭제 불가
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommonError'
+                example:
+                  success: false
+                  message: "예약 이력이 존재하는 주차공간은 삭제할 수 없습니다. 관리자에게 문의하세요."
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  /admin/spaces/pending:
+    get:
+      summary: 심사 대기 주차공간 목록 조회 (Admin)
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        403:
+          $ref: '#/components/responses/403Forbidden'
+
+  /admin/spaces/{space_id}/approve:
+    patch:
+      summary: 주차공간 승인 처리 (Admin - status: APPROVED)
+      parameters:
+        - in: path
+          name: space_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  /admin/spaces/{space_id}/reject:
+    patch:
+      summary: 주차공간 반려 처리 (Admin - status: REJECTED)
+      parameters:
+        - in: path
+          name: space_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  # ==========================================
+  # 4. 예약 및 현장 진행 (Reservation)
+  # ==========================================
+  /reservations:
+    post:
+      summary: 공간 예약 신청 및 즉시 확정 (Guest)
+      description: 행사 UPCOMING 검증, 공간 APPROVED 검증, 중복 예약 선점 검증
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [space_id, vehicle_plate_number]
+              properties:
+                space_id: { type: string, format: uuid, example: "c39a6b10-67c8-4720-94d7-4b78c8942b0c" }
+                vehicle_plate_number: { type: string, example: "12가 3456" }
+      responses:
+        200:
+          description: 예약 즉시 확정
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    $ref: '#/components/schemas/Reservation'
+        400:
+          $ref: '#/components/responses/400BadRequest'
+
+  /reservations/mine:
+    get:
+      summary: 내 예약 내역 목록 조회 (Guest)
+      responses:
+        200:
+          description: 내 예약 목록 반환
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Reservation'
+
+  /reservations/{reservation_id}/check-in:
+    post:
+      summary: 입차 확인 체크 (Guest - 소유권 검증 필수)
+      description: status == 'CONFIRMED' AND is_checked_in == false 일 때만 허용
+      parameters:
+        - in: path
+          name: reservation_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        400:
+          description: 상태 가드 위반 (CONFIRMED가 아니거나 이미 입차됨)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommonError'
+                example:
+                  success: false
+                  message: "입차 확인이 불가능한 상태입니다."
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  /reservations/{reservation_id}/check-out:
+    post:
+      summary: 출차 확인 체크 및 이용 종료 처리 (Guest - 소유권 검증 필수)
+      description: status == 'CONFIRMED' AND is_checked_in == true AND is_checked_out == false 일 때만 허용 (호출 시 status=COMPLETED 자동 전이)
+      parameters:
+        - in: path
+          name: reservation_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        200:
+          description: 출차 확인 완료 및 COMPLETED 전이
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      reservation_id: { type: string, format: uuid }
+                      is_checked_out: { type: boolean, example: true }
+                      status: { type: string, example: "COMPLETED" }
+        400:
+          description: 상태 가드 위반 (CONFIRMED가 아니거나 입차 전 출차 시도)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommonError'
+                example:
+                  success: false
+                  message: "출차 처리가 불가능한 상태이거나 먼저 입차 확인이 필요합니다."
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  /reservations/{reservation_id}/report-issue:
+    post:
+      summary: 현장 결함 신고 (Guest - 소유권 검증 필수)
+      description: status == 'CONFIRMED' 일 때만 허용. 호출 시 status=ISSUE_REPORTED 전이 및 사유 누적
+      parameters:
+        - in: path
+          name: reservation_id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [issue_detail]
+              properties:
+                issue_detail: { type: string, example: "타 차량 무단 주차로 인해 진입 불가" }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        400:
+          $ref: '#/components/responses/400BadRequest'
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  # ==========================================
+  # 5. 관리자 수동 처리 (Admin)
+  # ==========================================
+  /admin/reservations/{reservation_id}/resolve:
+    patch:
+      summary: 현장 이슈 수동 종결 (Admin - status: CANCELLED 또는 COMPLETED만 허용)
+      parameters:
+        - in: path
+          name: reservation_id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, is_refunded, note]
+              properties:
+                status: { type: string, enum: [CANCELLED, COMPLETED], example: "CANCELLED" }
+                is_refunded: { type: boolean, example: true }
+                note: { type: string, example: "현장 무단 주차 확인되어 계좌로 100% 전액 환불 이체 완료." }
+      responses:
+        200:
+          description: 수동 종결 처리 결과 반환
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    $ref: '#/components/schemas/Reservation'
+        400:
+          $ref: '#/components/responses/400BadRequest'
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+  /admin/reservations/{reservation_id}/confirm-payout:
+    patch:
+      summary: 호스트 수동 계좌 송금 완료 체크 (Admin)
+      description: status == 'COMPLETED' AND is_refunded == false AND is_payout_done == false 일 때만 허용 (이중 손실 원천 방어)
+      parameters:
+        - in: path
+          name: reservation_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
+        400:
+          description: 상태 가드 위반 (환불된 예약이거나 미종결 건)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommonError'
+                example:
+                  success: false
+                  message: "정상 완료(COMPLETED)된 건에 대해서만 정산이 가능하며, 이미 환불된 건은 정산할 수 없습니다."
+        403:
+          $ref: '#/components/responses/403Forbidden'
+        404:
+          $ref: '#/components/responses/404NotFound'
+
+# ==========================================
+# Components: Schemas & Responses
+# ==========================================
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    CommonSuccess:
+      type: object
+      required: [success, data]
+      properties:
+        success: { type: boolean, example: true }
+        data: { type: object }
+
+    CommonError:
+      type: object
+      required: [success, message]
+      properties:
+        success: { type: boolean, example: false }
+        message: { type: string, example: "잘못된 요청이거나 비즈니스 규칙 위반입니다." }
+
+    Event:
+      type: object
+      properties:
+        event_id: { type: string, format: uuid, example: "7a35e406-8d59-4d87-9bb3-5ceae843a851" }
+        name: { type: string, example: "2026 잠실 록 페스티벌" }
+        venue_name: { type: string, example: "잠실종합운동장" }
+        address: { type: string, example: "서울특별시 송파구 올림픽로 25" }
+        start_datetime: { type: string, format: date-time }
+        end_datetime: { type: string, format: date-time }
+        status: { type: string, enum: [UPCOMING, ONGOING, CLOSED], example: "UPCOMING" }
+
+    SpaceDetail:
+      type: object
+      properties:
+        space_id: { type: string, format: uuid, example: "c39a6b10-67c8-4720-94d7-4b78c8942b0c" }
+        address: { type: string, example: "서울시 송파구 잠실동 123-45" }
+        photo_url: { type: string, example: "https://storage.myseat.com/img1.jpg" }
+        walking_minutes: { type: integer, example: 6 }
+        entry_notes: { type: string, example: "골목 끝 주택 마당, SUV 가능" }
+        price: { type: integer, example: 15000 }
+
+    HostSpaceItem:
+      type: object
+      properties:
+        space_id: { type: string, format: uuid, example: "c39a6b10-67c8-4720-94d7-4b78c8942b0c" }
+        address: { type: string, example: "서울시 송파구 잠실동 123-45" }
+        status: { type: string, enum: [PENDING, APPROVED, REJECTED], example: "APPROVED" }
+        price: { type: integer, example: 15000 }
+        walking_minutes: { type: integer, example: 6 }
+        active_reservation:
+          type: object
+          nullable: true
+          properties:
+            reservation_id: { type: string, format: uuid, example: "bc823901-7299-4d1e-8fe5-2e6eef56012c" }
+            vehicle_plate_number: { type: string, example: "12가 3456" }
+            status: { type: string, example: "CONFIRMED" }
+            is_checked_in: { type: boolean, example: true }
+            is_checked_out: { type: boolean, example: false }
+
+    Reservation:
+      type: object
+      properties:
+        reservation_id: { type: string, format: uuid, example: "bc823901-7299-4d1e-8fe5-2e6eef56012c" }
+        space_id: { type: string, format: uuid, example: "c39a6b10-67c8-4720-94d7-4b78c8942b0c" }
+        status: { type: string, enum: [CONFIRMED, ISSUE_REPORTED, CANCELLED, COMPLETED], example: "CONFIRMED" }
+        payment_amount: { type: integer, example: 15000 }
+        vehicle_plate_number: { type: string, example: "12가 3456" }
+        is_checked_in: { type: boolean, example: false }
+        is_checked_out: { type: boolean, example: false }
+        is_refunded: { type: boolean, example: false }
+        is_payout_done: { type: boolean, example: false }
+        issue_note:
+          type: string
+          nullable: true
+          example: "[GUEST / 2026-10-10 17:30] 타 차량 무단 주차\n[ADMIN / 2026-10-10 17:42] 100% 환불 송금 완료"
+        space:
+          type: object
+          nullable: true
+          properties:
+            address: { type: string, example: "서울시 송파구 잠실동 123-45" }
+            entry_notes: { type: string, nullable: true, example: "골목 끝 주택 마당, SUV 가능" }
+
+  responses:
+    200Success:
+      description: 정상 응답
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CommonSuccess'
+    400BadRequest:
+      description: 비즈니스 규칙 위반 또는 파라미터 누락
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CommonError'
+    401Unauthorized:
+      description: 인증 실패 (토큰 누락 또는 만료)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CommonError'
+            example:
+              success: false
+              message: "로그인이 필요합니다."
+    403Forbidden:
+      description: 인가 실패 (권한 없음 또는 소유권 불일치)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CommonError'
+            example:
+              success: false
+              message: "접근 권한이 없습니다."
+    404NotFound:
+      description: 경로의 리소스(id)가 존재하지 않음
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CommonError'
+            example:
+              success: false
+              message: "요청한 리소스를 찾을 수 없습니다."
