@@ -2,9 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { mockStore, SEED_IDS } from '@/lib/mock-store';
 import { useRoleGuard } from '@/lib/useRoleGuard';
-import { getCachedSession } from '@/lib/client-session';
+import { api, errorMessage } from '@/lib/api-client';
 import { ui } from '@/lib/ui';
 import type { Event } from '@/types';
 
@@ -16,7 +15,7 @@ const EVENT_STATUS_LABEL: Record<Event['status'], string> = {
 
 export default function NewSpacePage() {
   const router = useRouter();
-  const { checked, hasAccess } = useRoleGuard(SEED_IDS.HOST);
+  const { checked, hasAccess } = useRoleGuard('USER');
   const [events, setEvents] = useState<Event[]>([]);
   const [eventId, setEventId] = useState('');
   const [address, setAddress] = useState('');
@@ -27,10 +26,10 @@ export default function NewSpacePage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    setEvents(mockStore.getEvents());
+    api<Event[]>('/events?status=UPCOMING,ONGOING,CLOSED').then(setEvents, () => setEvents([]));
   }, []);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
 
@@ -49,13 +48,13 @@ export default function NewSpacePage() {
       setError('예상 도보 소요 시간은 0 이상의 정수로 입력해주세요.');
       return;
     }
-    if (!Number.isFinite(priceValue) || priceValue < 0) {
+    if (!Number.isInteger(priceValue) || priceValue < 0) {
       setError('패키지 대여 요금을 올바르게 입력해주세요.');
       return;
     }
 
     try {
-      mockStore.createSpace(eventId, getCachedSession()?.user_id ?? '', {
+      await api(`/events/${eventId}/spaces`, 'POST', {
         address: address.trim(),
         photo_url: photoUrl.trim(),
         walking_minutes: minutes,
@@ -64,7 +63,7 @@ export default function NewSpacePage() {
       });
       router.push('/hosts/spaces');
     } catch (err) {
-      setError(err instanceof Error ? err.message : '공간 등록에 실패했습니다.');
+      setError(errorMessage(err));
     }
   }
 
@@ -73,7 +72,7 @@ export default function NewSpacePage() {
   }
 
   if (!hasAccess) {
-    return <p className={ui.muted}>호스트만 이용할 수 있는 화면입니다.</p>;
+    return <p className={ui.muted}>일반 회원 전용 화면입니다. (관리자 계정 이용 불가)</p>;
   }
 
   return (

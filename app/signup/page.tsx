@@ -1,43 +1,37 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { clearSessionCache } from '@/lib/client-session';
+import { api, errorMessage } from '@/lib/api-client';
 import { ui } from '@/lib/ui';
 
 export default function SignupPage() {
-  const router = useRouter();
   const [name, setName] = useState('');
   const [phone_number, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [vehiclePlateNumber, setVehiclePlateNumber] = useState('');
   const [vehicleModel, setVehicleModel] = useState('');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-    const res = await fetch('/api/auth/signup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    setSubmitting(true);
+    try {
+      await api('/auth/signup', 'POST', {
         name,
         phone_number,
         password,
         vehicle_plate_number: vehiclePlateNumber,
         vehicle_model: vehicleModel,
-      }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => null);
-      setError(body?.error ?? '회원가입에 실패했습니다.');
-      return;
+      });
+      // 가입 즉시 로그인됨. 전체 새로고침으로 세션 캐시 초기화
+      window.location.href = '/';
+    } catch (err) {
+      setError(errorMessage(err));
+      setSubmitting(false);
     }
-    clearSessionCache();
-    router.push('/');
-    router.refresh();
-    window.location.reload();
   }
 
   return (
@@ -48,7 +42,9 @@ export default function SignupPage() {
         <input
           value={phone_number}
           onChange={(e) => setPhone(e.target.value)}
-          placeholder="전화번호"
+          type="tel"
+          autoComplete="username"
+          placeholder="휴대폰 번호 (예: 01012345678)"
           className={ui.input}
           required
         />
@@ -56,7 +52,9 @@ export default function SignupPage() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           type="password"
-          placeholder="비밀번호 (4자 이상)"
+          autoComplete="new-password"
+          minLength={8}
+          placeholder="비밀번호 (8자 이상)"
           className={ui.input}
           required
         />
@@ -73,8 +71,8 @@ export default function SignupPage() {
           className={ui.input}
         />
         {error && <p className="text-sm text-rose-600">{error}</p>}
-        <button type="submit" className={ui.btnPrimary}>
-          가입하기
+        <button type="submit" disabled={submitting} className={ui.btnPrimary}>
+          {submitting ? '가입 중...' : '가입하기'}
         </button>
       </form>
       <p className={ui.muted}>

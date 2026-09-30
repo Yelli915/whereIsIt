@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { mockStore, SEED_IDS } from '@/lib/mock-store';
 import { useRoleGuard } from '@/lib/useRoleGuard';
+import { api, errorMessage } from '@/lib/api-client';
 import { ui, badgeTone } from '@/lib/ui';
 import Modal from '@/components/common/Modal';
 import type { Event, EventParkingSpace, Reservation, ReservationStatus } from '@/types';
 
 type Tab = 'events' | 'spaces' | 'reservations';
+type AdminReservation = Reservation & { space_address: string; event_id: string };
 
 const EVENT_STATUS_LABEL: Record<Event['status'], string> = {
   UPCOMING: '예정',
@@ -50,11 +51,11 @@ const TABS: { key: Tab; label: string }[] = [
 ];
 
 export default function AdminPage() {
-  const { checked, hasAccess } = useRoleGuard(SEED_IDS.ADMIN);
+  const { checked, hasAccess } = useRoleGuard('ADMIN');
   const [tab, setTab] = useState<Tab>('events');
   const [events, setEvents] = useState<Event[]>([]);
-  const [spaces, setSpaces] = useState<EventParkingSpace[]>([]);
-  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [pendingSpaces, setPendingSpaces] = useState<EventParkingSpace[]>([]);
+  const [reservations, setReservations] = useState<AdminReservation[]>([]);
 
   const [toastMessage, setToastMessage] = useState('');
   const [confirmAction, setConfirmAction] = useState<{ message: string; onConfirm: () => void } | null>(
@@ -83,46 +84,72 @@ export default function AdminPage() {
   const [isRefunded, setIsRefunded] = useState(false);
   const [adminNote, setAdminNote] = useState('');
 
-  function fetchAll() {
-    setEvents(mockStore.getEvents());
-    setSpaces(mockStore.getSpaces());
-    setReservations(mockStore.getReservations());
+  // ponytail: 행사별 예약 API를 행사 수만큼 호출. 행사가 많아지면 전체 조회용 /admin/reservations 추가
+  async function fetchAll() {
+    try {
+      const evs = await api<Event[]>('/events?status=UPCOMING,ONGOING,CLOSED');
+      const [pending, perEvent] = await Promise.all([
+        api<EventParkingSpace[]>('/admin/spaces/pending'),
+        Promise.all(
+          evs.map((ev) =>
+            api<AdminReservation[]>(`/admin/events/${ev.event_id}/reservations`).then((rs) =>
+              rs.map((r) => ({ ...r, event_id: ev.event_id }))
+            )
+          )
+        ),
+      ]);
+      setEvents(evs);
+      setPendingSpaces(pending);
+      setReservations(perEvent.flat());
+    } catch (e) {
+      setToastMessage(errorMessage(e));
+    }
+  }
+
+  // 실패 시 서버 메시지를 띄우고, 성공/실패 모두 목록을 다시 불러옴. 실패하면 undefined 반환
+  async function run<T>(action: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return await action();
+    } catch (e) {
+      setToastMessage(errorMessage(e));
+    } finally {
+      fetchAll();
+    }
   }
 
   useEffect(() => {
-    fetchAll();
-  }, []);
-
-  const pendingSpaces = useMemo(() => spaces.filter((s) => s.status === 'PENDING'), [spaces]);
+    if (hasAccess) fetchAll();
+  }, [hasAccess]);
 
   const reservationRows = useMemo(() => {
     return reservations
-      .map((r) => {
-        const space = spaces.find((s) => s.space_id === r.space_id);
-        const event = space ? events.find((e) => e.event_id === space.event_id) : undefined;
-        return { reservation: r, space, event };
-      })
+      .map((r) => ({
+        reservation: r,
+        space: { address: r.space_address },
+        event: events.find((e) => e.event_id === r.event_id),
+      }))
       .filter((row) => statusFilter === 'ALL' || row.reservation.status === statusFilter)
       .filter((row) => eventFilter === 'ALL' || row.event?.event_id === eventFilter);
-  }, [reservations, spaces, events, statusFilter, eventFilter]);
+  }, [reservations, events, statusFilter, eventFilter]);
 
-  function handleCreateEvent(e: React.FormEvent) {
+  async function handleCreateEvent(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim() || !venueName.trim() || !address.trim() || !startDatetime || !endDatetime) return;
-    mockStore.createEvent({
-      name: name.trim(),
-      venue_name: venueName.trim(),
-      address: address.trim(),
-      start_datetime: startDatetime,
-      end_datetime: endDatetime,
-      created_by: SEED_IDS.ADMIN,
-    });
+    const created = await run(() =>
+      api('/admin/events', 'POST', {
+        name: name.trim(),
+        venue_name: venueName.trim(),
+        address: address.trim(),
+        start_datetime: startDatetime,
+        end_datetime: endDatetime,
+      })
+    );
+    if (!created) return;
     setName('');
     setVenueName('');
     setAddress('');
     setStartDatetime('');
     setEndDatetime('');
-    fetchAll();
   }
 
   function openEditModal(ev: Event) {
@@ -134,42 +161,45 @@ export default function AdminPage() {
     setEditEndDatetime(ev.end_datetime);
   }
 
-  function submitEditEvent(e: React.FormEvent) {
+  async function submitEditEvent(e: React.FormEvent) {
     e.preventDefault();
     if (!editTargetId) return;
     if (!editName.trim() || !editVenueName.trim() || !editAddress.trim() || !editStartDatetime || !editEndDatetime) {
       return;
     }
-    mockStore.updateEvent(editTargetId, {
-      name: editName.trim(),
-      venue_name: editVenueName.trim(),
-      address: editAddress.trim(),
-      start_datetime: editStartDatetime,
-      end_datetime: editEndDatetime,
-    });
-    setEditTargetId(null);
-    fetchAll();
+    const updated = await run(() =>
+      api(`/admin/events/${editTargetId}`, 'PATCH', {
+        name: editName.trim(),
+        venue_name: editVenueName.trim(),
+        address: editAddress.trim(),
+        start_datetime: editStartDatetime,
+        end_datetime: editEndDatetime,
+      })
+    );
+    if (updated) setEditTargetId(null);
   }
 
   function handleBlockReservations(eventId: string) {
-    mockStore.blockEventReservations(eventId);
-    fetchAll();
+    run(() => api(`/admin/events/${eventId}/block-reservations`, 'POST'));
   }
 
-  function handleCloseEvent(eventId: string) {
-    const changed = mockStore.closeEvent(eventId);
-    fetchAll();
-    setToastMessage(`행사가 종료되었습니다. 미출차 ${changed}건이 이용완료로 일괄 전환되었습니다.`);
+  async function handleCloseEvent(eventId: string) {
+    const result = await run(() =>
+      api<{ auto_completed_reservations_count: number }>(`/admin/events/${eventId}/close`, 'POST')
+    );
+    if (result) {
+      setToastMessage(
+        `행사가 종료되었습니다. 미출차 ${result.auto_completed_reservations_count}건이 이용완료로 일괄 전환되었습니다.`
+      );
+    }
   }
 
   function handleApproveSpace(spaceId: string) {
-    mockStore.approveSpace(spaceId);
-    fetchAll();
+    run(() => api(`/admin/spaces/${spaceId}/approve`, 'PATCH'));
   }
 
   function handleRejectSpace(spaceId: string) {
-    mockStore.rejectSpace(spaceId);
-    fetchAll();
+    run(() => api(`/admin/spaces/${spaceId}/reject`, 'PATCH'));
   }
 
   function openDetailModal(r: Reservation) {
@@ -181,20 +211,20 @@ export default function AdminPage() {
     }
   }
 
-  function submitResolve() {
+  async function submitResolve() {
     if (!detailTargetId) return;
-    mockStore.resolveReservation(detailTargetId, {
-      status: resolveStatus,
-      is_refunded: isRefunded,
-      adminNote,
-    });
-    setDetailTargetId(null);
-    fetchAll();
+    const resolved = await run(() =>
+      api(`/admin/reservations/${detailTargetId}/resolve`, 'PATCH', {
+        status: resolveStatus,
+        is_refunded: isRefunded,
+        note: adminNote,
+      })
+    );
+    if (resolved) setDetailTargetId(null);
   }
 
   function handleConfirmPayout(reservationId: string) {
-    mockStore.confirmPayout(reservationId);
-    fetchAll();
+    run(() => api(`/admin/reservations/${reservationId}/confirm-payout`, 'PATCH'));
   }
 
   if (!checked) {
@@ -614,7 +644,12 @@ export default function AdminPage() {
                   </button>
                 )}
                 {needsResolve && (
-                  <button type="button" onClick={submitResolve} className={`${ui.btnPrimary} flex-1`}>
+                  <button
+                    type="button"
+                    disabled={!adminNote.trim()}
+                    onClick={submitResolve}
+                    className={`${ui.btnPrimary} flex-1`}
+                  >
                     종결 처리
                   </button>
                 )}
@@ -679,7 +714,7 @@ export default function AdminPage() {
         </form>
       </Modal>
 
-      <Modal open={!!toastMessage} title="처리 완료" onClose={() => setToastMessage('')}>
+      <Modal open={!!toastMessage} title="알림" onClose={() => setToastMessage('')}>
         {toastMessage}
       </Modal>
 

@@ -63,8 +63,32 @@ paths:
                     type: object
                     properties:
                       access_token: { type: string, example: "eyJhbGciOi..." }
+                      user:
+                        type: object
+                        properties:
+                          user_id: { type: string }
+                          name: { type: string }
+                          role_type: { type: string, enum: [USER, ADMIN] }
         400:
           $ref: '#/components/responses/400BadRequest'
+        429:
+          description: 로그인 시도 과다 (15분 내 번호당 5회 / IP당 20회 실패 시 차단)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommonError'
+                example:
+                  success: false
+                  message: "로그인 시도가 너무 많습니다. 15분 후 다시 시도해주세요."
+
+  /auth/logout:
+    post:
+      summary: 로그아웃 (해당 사용자에게 발급된 모든 토큰 무효화)
+      description: 세션 쿠키 삭제 + users.session_version 증가. 토큰이 없거나 만료돼도 200
+      security: []
+      responses:
+        200:
+          $ref: '#/components/responses/200Success'
 
   /users/me:
     get:

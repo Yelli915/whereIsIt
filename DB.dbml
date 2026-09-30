@@ -18,6 +18,7 @@ CREATE TABLE users (
     vehicle_plate_number VARCHAR(20) NULL,
     vehicle_model VARCHAR(50) NULL,
     role_type VARCHAR(20) NOT NULL DEFAULT 'USER',
+    session_version INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT now()
 );
  
@@ -73,6 +74,14 @@ WHERE status != 'CANCELLED';
 -- 7. 성능 최적화 보조 인덱스
 CREATE INDEX idx_spaces_event_status ON event_parking_spaces (event_id, status);
 CREATE INDEX idx_reservations_guest ON reservations (guest_id);
+
+-- 8. 로그인 실패 기록 (무차별 대입 방지용, 15분 지난 기록은 자동 삭제)
+-- key: 'phone:01012345678' 또는 'ip:1.2.3.4', failed_at: epoch ms
+CREATE TABLE login_failures (
+    key VARCHAR(100) NOT NULL,
+    failed_at BIGINT NOT NULL
+);
+CREATE INDEX idx_login_failures_key ON login_failures (key, failed_at);
  
  
  
@@ -94,6 +103,7 @@ Table users {
   vehicle_plate_number varchar [null, note: '등록 차량번호']
   vehicle_model varchar [null, note: '차종']
   role_type varchar [not null, default: 'USER', note: 'USER, ADMIN']
+  session_version integer [not null, default: 0, note: '로그아웃 시 +1 → 기존 발급 토큰 전부 무효화']
   created_at timestamp [not null, default: `now()`]
  
   Note: '사용자 테이블'
@@ -149,4 +159,15 @@ Table reservations {
   }
  
   Note: '예약 및 결제/정산 테이블'
+}
+
+Table login_failures {
+  key varchar [not null, note: "'phone:{번호}' 또는 'ip:{주소}'"]
+  failed_at bigint [not null, note: '실패 시각 (epoch ms)']
+
+  indexes {
+    (key, failed_at) [name: 'idx_login_failures_key']
+  }
+
+  Note: '로그인 실패 기록 (무차별 대입 방지)'
 }

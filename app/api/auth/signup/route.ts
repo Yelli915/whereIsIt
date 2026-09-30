@@ -1,41 +1,36 @@
-import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { getDb } from '@/lib/db';
-import { hashPassword, signSession, SESSION_COOKIE } from '@/lib/auth';
+import { route, ok, body, requireString, HttpError } from '@/lib/api';
+import { hashPassword, signSession, setSessionCookie, normalizePhone } from '@/lib/auth';
 
-export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => null);
-  const name = body?.name?.trim();
-  const phone_number = body?.phone_number?.trim();
-  const password = body?.password;
-  const vehicle_plate_number = body?.vehicle_plate_number?.trim() || null;
-  const vehicle_model = body?.vehicle_model?.trim() || null;
+const MIN_PASSWORD_LENGTH = 8;
 
-  if (!name || !phone_number || !password) {
-    return NextResponse.json({ error: '이름, 전화번호, 비밀번호를 모두 입력해주세요.' }, { status: 400 });
+// role_type은 항상 USER. ADMIN은 시드 스크립트로만 생성 (api.yaml)
+export const POST = route(async (req) => {
+  const b = await body(req);
+  const name = requireString(b.name, '이름');
+  const phone_number = normalizePhone(b.phone_number);
+  if (!phone_number) throw new HttpError(400, '올바른 휴대폰 번호를 입력해주세요.');
+  if (typeof b.password !== 'string' || b.password.length < MIN_PASSWORD_LENGTH) {
+    throw new HttpError(400, `비밀번호는 ${MIN_PASSWORD_LENGTH}자 이상이어야 합니다.`);
   }
-  if (password.length < 4) {
-    return NextResponse.json({ error: '비밀번호는 4자 이상이어야 합니다.' }, { status: 400 });
-  }
-
-  const db = getDb();
-  const existing = db.prepare('SELECT user_id FROM users WHERE phone_number = ?').get(phone_number);
-  if (existing) {
-    return NextResponse.json({ error: '이미 가입된 전화번호입니다.' }, { status: 409 });
-  }
+  const optional = (v: unknown) => (typeof v === 'string' && v.trim()) || null;
 
   const user_id = randomUUID();
-  db.prepare(
-    'INSERT INTO users (user_id, name, phone_number, password_hash, vehicle_plate_number, vehicle_model, role_type) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(user_id, name, phone_number, hashPassword(password), vehicle_plate_number, vehicle_model, 'USER');
+  try {
+    getDb()
+      .prepare(
+        `INSERT INTO users (user_id, name, phone_number, password_hash, vehicle_plate_number, vehicle_model, role_type)
+         VALUES (?, ?, ?, ?, ?, ?, 'USER')`
+      )
+      .run(user_id, name, phone_number, hashPassword(b.password), optional(b.vehicle_plate_number), optional(b.vehicle_model));
+  } catch (e) {
+    if (String(e).includes('UNIQUE constraint failed')) throw new HttpError(400, '이미 가입된 전화번호입니다.');
+    throw e;
+  }
 
-  const token = signSession({ user_id, role_type: 'USER' });
-  const res = NextResponse.json({ user_id, name, role_type: 'USER' });
-  res.cookies.set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 60 * 60 * 24 * 7,
-  });
+  const access_token = signSession({ user_id, role_type: 'USER', ver: 0 });
+  const res = ok({ access_token, user: { user_id, name, role_type: 'USER' } });
+  setSessionCookie(res, access_token);
   return res;
-}
+});

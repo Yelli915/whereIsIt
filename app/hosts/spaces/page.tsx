@@ -3,12 +3,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { mockStore, SEED_IDS } from '@/lib/mock-store';
 import { useRoleGuard } from '@/lib/useRoleGuard';
-import { getCachedSession } from '@/lib/client-session';
+import { api, errorMessage } from '@/lib/api-client';
 import { ui, badgeTone } from '@/lib/ui';
 import Modal from '@/components/common/Modal';
 import type { EventParkingSpace, Reservation } from '@/types';
+
+type HostSpace = EventParkingSpace & {
+  active_reservation: Pick<
+    Reservation,
+    'reservation_id' | 'vehicle_plate_number' | 'status' | 'is_checked_in' | 'is_checked_out'
+  > | null;
+};
 
 const SPACE_STATUS_BADGE: Record<EventParkingSpace['status'], string> = {
   PENDING: '심사대기',
@@ -26,24 +32,17 @@ const POLL_INTERVAL_MS = 30000;
 
 export default function HostSpacesPage() {
   const router = useRouter();
-  const { checked, hasAccess } = useRoleGuard(SEED_IDS.HOST);
-  const [spaces, setSpaces] = useState<EventParkingSpace[]>([]);
-  const [reservationsBySpace, setReservationsBySpace] = useState<Record<string, Reservation>>({});
+  const { checked, hasAccess } = useRoleGuard('USER');
+  const [spaces, setSpaces] = useState<HostSpace[]>([]);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [deleteError, setDeleteError] = useState('');
   const [hotlineOpen, setHotlineOpen] = useState(false);
 
   const fetchData = useCallback(() => {
-    const hostId = getCachedSession()?.user_id ?? '';
-    const mySpaces = mockStore.getSpacesByHost(hostId);
-    const map: Record<string, Reservation> = {};
-    mySpaces.forEach((space) => {
-      const reservation = mockStore.getActiveReservationBySpace(space.space_id);
-      if (reservation) map[space.space_id] = reservation;
-    });
-    setSpaces(mySpaces);
-    setReservationsBySpace(map);
-    setLastUpdated(new Date());
+    api<HostSpace[]>('/spaces/mine').then((mySpaces) => {
+      setSpaces(mySpaces);
+      setLastUpdated(new Date());
+    }, () => {});
   }, []);
 
   useEffect(() => {
@@ -53,12 +52,12 @@ export default function HostSpacesPage() {
     return () => clearInterval(timer);
   }, [fetchData, hasAccess]);
 
-  function handleDelete(spaceId: string) {
+  async function handleDelete(spaceId: string) {
     try {
-      mockStore.deleteSpace(spaceId);
+      await api(`/spaces/${spaceId}`, 'DELETE');
       fetchData();
     } catch (e) {
-      setDeleteError(e instanceof Error ? e.message : '삭제 중 오류가 발생했습니다.');
+      setDeleteError(errorMessage(e));
     }
   }
 
@@ -67,7 +66,7 @@ export default function HostSpacesPage() {
   }
 
   if (!hasAccess) {
-    return <p className={ui.muted}>호스트만 이용할 수 있는 화면입니다.</p>;
+    return <p className={ui.muted}>일반 회원 전용 화면입니다. (관리자 계정 이용 불가)</p>;
   }
 
   return (
@@ -103,7 +102,7 @@ export default function HostSpacesPage() {
 
       <div className="grid grid-cols-2 gap-3">
         {spaces.map((space) => {
-          const reservation = reservationsBySpace[space.space_id];
+          const reservation = space.active_reservation;
           const hasAnomaly = reservation?.status === 'ISSUE_REPORTED';
           return (
             <div key={space.space_id} className={ui.card}>

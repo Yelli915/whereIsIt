@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { mockStore, SEED_IDS } from '@/lib/mock-store';
+import { api } from '@/lib/api-client';
 import { useRoleGuard } from '@/lib/useRoleGuard';
 import { ui, badgeTone } from '@/lib/ui';
 import type { Event } from '@/types';
@@ -33,11 +33,11 @@ function formatEventPeriod(startIso: string, endIso: string): string {
 
 export default function EventsPage() {
   const router = useRouter();
-  const { checked, hasAccess } = useRoleGuard(SEED_IDS.GUEST);
+  const { checked, hasAccess } = useRoleGuard('USER');
   const [events, setEvents] = useState<Event[]>([]);
 
   useEffect(() => {
-    setEvents(mockStore.getEvents().filter((e) => e.status === 'UPCOMING' || e.status === 'ONGOING'));
+    api<Event[]>('/events').then(setEvents, () => setEvents([]));
   }, []);
 
   if (!checked) {
@@ -45,7 +45,7 @@ export default function EventsPage() {
   }
 
   if (!hasAccess) {
-    return <p className={ui.muted}>게스트만 이용할 수 있는 화면입니다.</p>;
+    return <p className={ui.muted}>일반 회원 전용 화면입니다. (관리자 계정 이용 불가)</p>;
   }
 
   return (

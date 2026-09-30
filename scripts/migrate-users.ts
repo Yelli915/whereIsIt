@@ -1,23 +1,34 @@
 import { getDb } from '../lib/db';
 import { hashPassword } from '../lib/auth';
-import { SEED_IDS } from '../lib/mock-store';
+import { seedDB, SEED_IDS } from '../lib/seed';
 
+// lib/seed.ts 시드 데이터를 그대로 SQLite에 적재 (이미 있는 행은 건너뜀)
 const db = getDb();
+const { users, events, spaces, reservations } = seedDB();
 
-const seedUsers = [
-  { user_id: SEED_IDS.GUEST, name: '김게스트', phone_number: '010-1111-1111', password: 'guest1234', vehicle_plate_number: '12가3456', vehicle_model: '아반떼', role_type: 'USER' },
-  { user_id: SEED_IDS.HOST, name: '박호스트', phone_number: '010-2222-2222', password: 'host1234', role_type: 'USER' },
-  { user_id: SEED_IDS.ADMIN, name: '최운영', phone_number: '010-9999-9999', password: 'admin1234', role_type: 'ADMIN' },
-];
+const passwords: Record<string, string> = {
+  [SEED_IDS.GUEST]: 'guest1234',
+  [SEED_IDS.GUEST2]: 'guest1234',
+  [SEED_IDS.GUEST3]: 'guest1234',
+  [SEED_IDS.HOST]: 'host1234',
+  [SEED_IDS.ADMIN]: 'admin1234',
+};
 
-const insert = db.prepare(`
-  INSERT OR IGNORE INTO users (user_id, name, phone_number, password_hash, vehicle_plate_number, vehicle_model, role_type)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
-`);
-
-for (const u of seedUsers) {
-  insert.run(u.user_id, u.name, u.phone_number, hashPassword(u.password), u.vehicle_plate_number ?? null, u.vehicle_model ?? null, u.role_type);
+function insertAll(table: string, rows: Record<string, any>[]) {
+  // created_at은 DB 기본값(datetime('now'))을 써야 API 정렬과 형식이 맞음
+  for (const { created_at, ...row } of rows) {
+    const cols = Object.keys(row);
+    const values = Object.values(row).map((v) => (typeof v === 'boolean' ? Number(v) : v ?? null));
+    db.prepare(`INSERT OR IGNORE INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...values);
+  }
 }
 
-console.log('users table ready, seed accounts:');
-seedUsers.forEach((u) => console.log(`  ${u.phone_number} / ${u.password} (${u.role_type === 'ADMIN' ? '관리자' : u.user_id})`));
+db.exec('BEGIN');
+insertAll('users', users.map((u) => ({ ...u, password_hash: hashPassword(passwords[u.user_id]) })));
+insertAll('events', events);
+insertAll('event_parking_spaces', spaces);
+insertAll('reservations', reservations);
+db.exec('COMMIT');
+
+console.log('seed complete. accounts:');
+users.forEach((u) => console.log(`  ${u.phone_number} / ${passwords[u.user_id]} (${u.name}, ${u.role_type})`));

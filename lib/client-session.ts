@@ -1,35 +1,21 @@
-import { SEED_IDS } from './mock-store';
+import type { RoleType } from '@/types';
 
 export interface ClientSession {
   user_id: string;
   name: string;
-  role_type: string;
+  role_type: RoleType;
 }
-
-// ponytail: 실제 인증(PASS 등) 없이 시드 계정으로 즉시 전환하는 Phase 0 임시 로그인. 실제 배포 전 제거.
-export const QUICK_ACCOUNTS = [
-  { label: '게스트', user_id: SEED_IDS.GUEST, phone_number: '010-1111-1111', password: 'guest1234' },
-  { label: '호스트', user_id: SEED_IDS.HOST, phone_number: '010-2222-2222', password: 'host1234' },
-  { label: '관리자', user_id: SEED_IDS.ADMIN, phone_number: '010-9999-9999', password: 'admin1234' },
-] as const;
 
 let cached: ClientSession | null | undefined;
 let inflight: Promise<ClientSession | null> | null = null;
 
-export async function login(phone_number: string, password: string): Promise<ClientSession | null> {
-  const res = await fetch('/api/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ phone_number, password }),
-  });
-  return res.ok ? res.json() : null;
-}
-
+// 로그인 여부는 서버(/api/users/me)가 판단. 401이면 비로그인
 export function fetchSession(): Promise<ClientSession | null> {
   if (cached !== undefined) return Promise.resolve(cached);
   if (!inflight) {
-    inflight = fetch('/api/auth/me')
-      .then((r) => (r.ok ? r.json() : null))
+    inflight = fetch('/api/users/me')
+      .then((r) => (r.ok ? r.json().then((j) => j.data) : null))
+      .catch(() => null)
       .then((data) => {
         cached = data;
         inflight = null;
@@ -39,11 +25,12 @@ export function fetchSession(): Promise<ClientSession | null> {
   return inflight;
 }
 
-export function getCachedSession(): ClientSession | null {
-  return cached ?? null;
+export async function logout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/login';
 }
 
-export function clearSessionCache() {
-  cached = undefined;
-  inflight = null;
+// 로그인 후 돌아갈 경로. 외부 URL(//evil.com 등)로의 오픈 리다이렉트 차단
+export function safeNextPath(next: string | null, fallback: string): string {
+  return next && next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\') ? next : fallback;
 }

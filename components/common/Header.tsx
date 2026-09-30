@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { fetchSession, clearSessionCache, type ClientSession } from '@/lib/client-session';
+import { fetchSession, logout, type ClientSession } from '@/lib/client-session';
 import { useMounted } from '@/lib/useMounted';
 
 export default function Header() {
@@ -16,12 +16,6 @@ export default function Header() {
       setChecked(true);
     });
   }, []);
-
-  async function logout() {
-    await fetch('/api/auth/logout', { method: 'POST' });
-    clearSessionCache();
-    window.location.href = '/login';
-  }
 
   return (
     <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/80 backdrop-blur">

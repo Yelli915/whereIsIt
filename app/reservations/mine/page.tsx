@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { mockStore, SEED_IDS } from '@/lib/mock-store';
 import { useRoleGuard } from '@/lib/useRoleGuard';
-import { getCachedSession } from '@/lib/client-session';
+import { api, errorMessage } from '@/lib/api-client';
 import { ui, badgeTone } from '@/lib/ui';
 import Modal from '@/components/common/Modal';
-import type { EventParkingSpace, Reservation } from '@/types';
+import type { Reservation } from '@/types';
+
+type MyReservation = Reservation & { space: { address: string; entry_notes: string | null } };
 
 const STATUS_LABEL: Record<Reservation['status'], string> = {
   CONFIRMED: '확정',
@@ -39,9 +40,9 @@ const FILTER_OPTIONS: { value: 'ALL' | Reservation['status']; label: string }[] 
 
 export default function MyReservationsPage() {
   const router = useRouter();
-  const { checked, hasAccess } = useRoleGuard(SEED_IDS.GUEST);
-  const [reservations, setReservations] = useState<Reservation[]>([]);
-  const [spacesById, setSpacesById] = useState<Record<string, EventParkingSpace>>({});
+  const { checked, hasAccess } = useRoleGuard('USER');
+  const [reservations, setReservations] = useState<MyReservation[]>([]);
+  const [error, setError] = useState('');
   const [issueTargetId, setIssueTargetId] = useState<string | null>(null);
   const [issueDetail, setIssueDetail] = useState('');
   const [hotlineOpen, setHotlineOpen] = useState(false);
@@ -51,15 +52,20 @@ export default function MyReservationsPage() {
   );
 
   function fetchData() {
-    const guestId = getCachedSession()?.user_id ?? '';
-    const myReservations = mockStore.getReservationsByGuest(guestId);
-    const map: Record<string, EventParkingSpace> = {};
-    myReservations.forEach((r) => {
-      const space = mockStore.getSpaceById(r.space_id);
-      if (space) map[r.space_id] = space;
-    });
-    setReservations(myReservations);
-    setSpacesById(map);
+    api<MyReservation[]>('/reservations/mine').then(setReservations, (e) => setError(errorMessage(e)));
+  }
+
+  // 실패해도 목록은 다시 불러와 서버 상태와 맞춤
+  async function run(action: () => Promise<unknown>) {
+    try {
+      await action();
+      return true;
+    } catch (e) {
+      setError(errorMessage(e));
+      return false;
+    } finally {
+      fetchData();
+    }
   }
 
   useEffect(() => {
@@ -69,13 +75,11 @@ export default function MyReservationsPage() {
   }, [hasAccess]);
 
   function handleCheckIn(reservationId: string) {
-    mockStore.checkIn(reservationId);
-    fetchData();
+    run(() => api(`/reservations/${reservationId}/check-in`, 'POST'));
   }
 
   function handleCheckOut(reservationId: string) {
-    mockStore.checkOut(reservationId);
-    fetchData();
+    run(() => api(`/reservations/${reservationId}/check-out`, 'POST'));
   }
 
   function openIssueModal(reservationId: string) {
@@ -83,12 +87,14 @@ export default function MyReservationsPage() {
     setIssueDetail('');
   }
 
-  function submitIssue() {
+  async function submitIssue() {
     if (!issueTargetId || !issueDetail.trim()) return;
-    mockStore.reportIssue(issueTargetId, issueDetail.trim());
+    const reportId = issueTargetId;
     setIssueTargetId(null);
-    fetchData();
-    setHotlineOpen(true);
+    const reported = await run(() =>
+      api(`/reservations/${reportId}/report-issue`, 'POST', { issue_detail: issueDetail.trim() })
+    );
+    if (reported) setHotlineOpen(true);
   }
 
   if (!checked) {
@@ -96,7 +102,7 @@ export default function MyReservationsPage() {
   }
 
   if (!hasAccess) {
-    return <p className={ui.muted}>게스트만 이용할 수 있는 화면입니다.</p>;
+    return <p className={ui.muted}>일반 회원 전용 화면입니다. (관리자 계정 이용 불가)</p>;
   }
 
   const filteredReservations = reservations.filter(
@@ -136,7 +142,7 @@ export default function MyReservationsPage() {
 
       <div className="grid grid-cols-2 gap-3">
         {filteredReservations.map((r) => {
-          const space = spacesById[r.space_id];
+          const { space } = r;
           const canCheckIn = r.status === 'CONFIRMED' && !r.is_checked_in;
           const canCheckOut = r.status === 'CONFIRMED' && r.is_checked_in && !r.is_checked_out;
           const canReportIssue = r.status === 'CONFIRMED';
@@ -232,6 +238,10 @@ export default function MyReservationsPage() {
             </button>
           </div>
         </div>
+      </Modal>
+
+      <Modal open={!!error} title="처리 불가" onClose={() => setError('')}>
+        {error}
       </Modal>
 
       <Modal open={hotlineOpen} title="비상 유선 연락처" onClose={() => setHotlineOpen(false)}>

@@ -3,21 +3,20 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { SEED_IDS } from '@/lib/mock-store';
 import { fetchSession } from '@/lib/client-session';
+import type { RoleType } from '@/types';
 import { useMounted } from '@/lib/useMounted';
 import { ui } from '@/lib/ui';
 
-const ROLE_LINKS: Record<string, { href: string; label: string; description: string }[]> = {
-  [SEED_IDS.GUEST]: [
+// 일반 회원(USER)은 게스트·호스트 기능을 모두 사용
+const ROLE_LINKS: Record<RoleType, { href: string; label: string; description: string }[]> = {
+  USER: [
     { href: '/events', label: '행사 탐색', description: '진행 예정/중인 행사와 주변 주차공간을 둘러봅니다.' },
     { href: '/reservations/mine', label: '내 이용권', description: '예약 현황을 확인하고 입·출차를 처리합니다.' },
-  ],
-  [SEED_IDS.HOST]: [
     { href: '/hosts/spaces', label: '내 공간 목록', description: '등록한 공간의 심사 상태와 예약 현황을 관리합니다.' },
     { href: '/hosts/spaces/new', label: '공간 등록', description: '새 행사에 대여할 주차공간을 신청합니다.' },
   ],
-  [SEED_IDS.ADMIN]: [
+  ADMIN: [
     { href: '/admin', label: '관리자 대시보드', description: '행사 생애주기, 공간 심사, 예약 관제를 처리합니다.' },
   ],
 };
@@ -25,7 +24,7 @@ const ROLE_LINKS: Record<string, { href: string; label: string; description: str
 export default function Home() {
   const router = useRouter();
   const mounted = useMounted();
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [role, setRole] = useState<RoleType | null>(null);
 
   useEffect(() => {
     fetchSession().then((session) => {
@@ -33,15 +32,15 @@ export default function Home() {
         router.replace('/login');
         return;
       }
-      setCurrentUserId(session.user_id);
+      setRole(session.role_type);
     });
   }, [router]);
 
-  if (!mounted || currentUserId === null) {
+  if (!mounted || role === null) {
     return <p className={ui.muted}>불러오는 중...</p>;
   }
 
-  const links = ROLE_LINKS[currentUserId] ?? [];
+  const links = ROLE_LINKS[role];
 
   return (
     <div className="flex flex-col gap-6">

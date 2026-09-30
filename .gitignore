@@ -1,1 +1,5 @@
 node_modules
+.env*.local
+.next
+# 로컬 SQLite DB (비밀번호 해시 포함) — npm run db:seed 로 생성
+data/*.db*

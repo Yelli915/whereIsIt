@@ -2,40 +2,41 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { mockStore, SEED_IDS } from '@/lib/mock-store';
 import { useRoleGuard } from '@/lib/useRoleGuard';
-import { getCachedSession } from '@/lib/client-session';
+import { api, errorMessage } from '@/lib/api-client';
 import { ui, badgeTone } from '@/lib/ui';
 import Modal from '@/components/common/Modal';
 import type { Event, EventParkingSpace } from '@/types';
+
+type Space = Pick<EventParkingSpace, 'space_id' | 'address' | 'photo_url' | 'walking_minutes' | 'entry_notes' | 'price'> & {
+  is_reserved: boolean;
+};
 
 const AGREEMENT_TEXT =
   '본 상품은 행사 한정 단기 대여 공간으로 예약 확정 후 단순 변심에 의한 취소 및 환불이 전면 불가합니다. 단, 현장 무단 점유나 진입 불가 등 현장 결함 시 관리자 유선 확인을 통해 100% 전액 환불됩니다.';
 
 export default function EventSpacesPage({ params }: { params: { id: string } }) {
   const router = useRouter();
-  const { checked, hasAccess } = useRoleGuard(SEED_IDS.GUEST);
+  const { checked, hasAccess } = useRoleGuard('USER');
   const [event, setEvent] = useState<Event | null>(null);
-  const [spaces, setSpaces] = useState<EventParkingSpace[]>([]);
-  const [reservedSpaceIds, setReservedSpaceIds] = useState<Set<string>>(new Set());
-  const [selectedSpace, setSelectedSpace] = useState<EventParkingSpace | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [spaces, setSpaces] = useState<Space[]>([]);
+  const [selectedSpace, setSelectedSpace] = useState<Space | null>(null);
   const [plateNumber, setPlateNumber] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState('');
   const [confirmPay, setConfirmPay] = useState(false);
 
-  function fetchData() {
-    const ev = mockStore.getEventById(params.id) ?? null;
-    const approvedSpaces = mockStore.getApprovedSpacesByEvent(params.id);
-    setEvent(ev);
-    setSpaces(approvedSpaces);
-    setReservedSpaceIds(
-      new Set(
-        approvedSpaces
-          .filter((s) => mockStore.getActiveReservationBySpace(s.space_id))
-          .map((s) => s.space_id)
-      )
-    );
+  // 공간 목록 API는 UPCOMING 행사만 허용(그 외 400)하므로 마감된 행사는 목록 없이 배너만 표시
+  async function fetchData() {
+    try {
+      const ev = await api<Event>(`/events/${params.id}`);
+      setEvent(ev);
+      setSpaces(ev.status === 'UPCOMING' ? await api<Space[]>(`/events/${params.id}/spaces`) : []);
+    } catch {
+      setEvent(null);
+    }
+    setLoaded(true);
   }
 
   useEffect(() => {
@@ -45,10 +46,11 @@ export default function EventSpacesPage({ params }: { params: { id: string } }) 
 
   const reservationOpenForEvent = event?.status === 'UPCOMING';
 
-  function openSpace(space: EventParkingSpace) {
-    if (!reservationOpenForEvent || reservedSpaceIds.has(space.space_id)) return;
+  function openSpace(space: Space) {
+    if (!reservationOpenForEvent || space.is_reserved) return;
     setSelectedSpace(space);
-    setPlateNumber(mockStore.getUserById(getCachedSession()?.user_id ?? '')?.vehicle_plate_number ?? '');
+    setPlateNumber('');
+    api('/users/me').then((me) => setPlateNumber((cur) => cur || me.vehicle_plate_number || ''), () => {});
     setAgreed(false);
     setError('');
   }
@@ -58,31 +60,33 @@ export default function EventSpacesPage({ params }: { params: { id: string } }) 
     setConfirmPay(false);
   }
 
-  function handlePay() {
+  async function handlePay() {
     if (!selectedSpace) return;
     if (!plateNumber.trim()) {
       setError('차량번호를 입력해주세요.');
+      setConfirmPay(false);
       return;
     }
     try {
-      mockStore.createReservation({
+      await api('/reservations', 'POST', {
         space_id: selectedSpace.space_id,
-        guest_id: getCachedSession()?.user_id ?? '',
         vehicle_plate_number: plateNumber.trim(),
       });
       closeModal();
       router.push('/reservations/mine');
     } catch (e) {
-      setError(e instanceof Error ? e.message : '예약에 실패했습니다.');
+      setError(errorMessage(e));
+      setConfirmPay(false);
+      fetchData();
     }
   }
 
-  if (!checked) {
+  if (!checked || (hasAccess && !loaded)) {
     return <p className={ui.muted}>불러오는 중...</p>;
   }
 
   if (!hasAccess) {
-    return <p className={ui.muted}>게스트만 이용할 수 있는 화면입니다.</p>;
+    return <p className={ui.muted}>일반 회원 전용 화면입니다. (관리자 계정 이용 불가)</p>;
   }
 
   if (!event) {
@@ -111,7 +115,7 @@ export default function EventSpacesPage({ params }: { params: { id: string } }) 
 
       <div className="grid grid-cols-2 gap-3">
         {spaces.map((space) => {
-          const closed = reservedSpaceIds.has(space.space_id);
+          const closed = space.is_reserved;
           const disabled = !reservationOpenForEvent || closed;
           return (
             <button
